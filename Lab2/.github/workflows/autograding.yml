@@ -1,0 +1,164 @@
+name: Lab 2 Autograding
+# triggers: this will run everytime a student pushes to main/master
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  autograding:
+    runs-on: ubuntu-latest
+    name: Autograding Lab 2
+
+    steps:
+     # Fetch all history for commit counting
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+     # Installs R 4.3.0 on the GitHub runner.
+    - name: Set up R
+      uses: r-lib/actions/setup-r@v2
+      with:
+        r-version: '4.3.0'
+     # Installs testthat package
+    - name: Install testthat
+      run: |
+        install.packages('testthat', repos = 'https://cloud.r-project.org')
+      shell: Rscript {0}
+    # Checks commit count and awards points
+    - name: Check commit count
+      id: check_commits
+      run: |
+        echo "Counting commits..."
+        COMMIT_COUNT=$(git log --oneline | wc -l)
+        echo "Total commits: $COMMIT_COUNT"
+
+        SCORE=0
+        if [ $COMMIT_COUNT -ge 5 ]; then
+          echo "✓ Excellent! Has $COMMIT_COUNT commits (5+ expected)"
+          SCORE=15
+        elif [ $COMMIT_COUNT -ge 3 ]; then
+          echo "✓ Good! Has $COMMIT_COUNT commits (3+ required)"
+          SCORE=15
+        elif [ $COMMIT_COUNT -ge 2 ]; then
+          echo "⚠ Has $COMMIT_COUNT commits (need at least 3)"
+          SCORE=10
+        else
+          echo "✗ Only $COMMIT_COUNT commit(s) (need at least 3)"
+          SCORE=5
+        fi
+
+        echo "Commits score: $SCORE/15"
+        echo "COMMITS_SCORE=$SCORE" >> $GITHUB_OUTPUT
+    # sources the students R file, runs testthat tests, calulcates score.
+    - name: Run R tests
+      id: run_tests
+      run: |
+        library(testthat)
+
+        # Change to the tests directory
+        setwd("tests")
+
+        # Source student files and run tests, capturing results
+        results <- tryCatch({
+          source("../lab2_assignment.R", local = TRUE)
+
+          # Run tests and capture output
+          test_results <- test_dir("testthat", reporter = "summary")
+
+          # Count passed and failed
+          passed <- sum(as.data.frame(test_results)$passed)
+          failed <- sum(as.data.frame(test_results)$failed)
+
+          list(passed = passed, failed = failed, error = FALSE)
+        }, error = function(e) {
+          message("Error running tests: ", e$message)
+          list(passed = 0, failed = 0, error = TRUE, message = e$message)
+        })
+
+        if (results$error) {
+          cat("TEST_PASSED=0\n", file = Sys.getenv("GITHUB_OUTPUT"), append = TRUE)
+          cat("TEST_FAILED=1\n", file = Sys.getenv("GITHUB_OUTPUT"), append = TRUE)
+          cat("R_SCORE=0\n", file = Sys.getenv("GITHUB_OUTPUT"), append = TRUE)
+        } else {
+          total_tests <- results$passed + results$failed
+          if (total_tests > 0) {
+            score <- round((results$passed / total_tests) * 60)
+          } else {
+            score <- 0
+          }
+
+          cat(sprintf("TEST_PASSED=%d\n", results$passed), file = Sys.getenv("GITHUB_OUTPUT"), append = TRUE)
+          cat(sprintf("TEST_FAILED=%d\n", results$failed), file = Sys.getenv("GITHUB_OUTPUT"), append = TRUE)
+          cat(sprintf("R_SCORE=%d\n", score), file = Sys.getenv("GITHUB_OUTPUT"), append = TRUE)
+
+          message(sprintf("Tests passed: %d/%d", results$passed, total_tests))
+          message(sprintf("R exercises score: %d/60", score))
+        }
+      shell: Rscript {0}
+      continue-on-error: true
+
+    - name: Calculate total score
+      id: total_score
+      run: |
+        COMMITS_SCORE=${{ steps.check_commits.outputs.COMMITS_SCORE }}
+        COMMIT_MSG_SCORE=${{ steps.check_commit_messages.outputs.COMMIT_MSG_SCORE }}
+        R_SCORE=${{ steps.run_tests.outputs.R_SCORE }}
+
+        # Default to 0 if not set
+        COMMITS_SCORE=${COMMITS_SCORE:-0}
+        COMMIT_MSG_SCORE=${COMMIT_MSG_SCORE:-0}
+        R_SCORE=${R_SCORE:-0}
+
+        GIT_TOTAL=$((COMMITS_SCORE + COMMIT_MSG_SCORE))
+        GRAND_TOTAL=$((GIT_TOTAL + R_SCORE))
+
+        echo "═══════════════════════════════════════"
+        echo "       LAB 2 AUTOGRADING RESULTS       "
+        echo "═══════════════════════════════════════"
+        echo ""
+        echo "PART A: Git/GitHub Practice"
+        echo "  Commit count:        $COMMITS_SCORE/15"
+        echo "  Commit messages:     $COMMIT_MSG_SCORE/15"
+        echo "  ─────────────────────────────"
+        echo "  Git subtotal:        $GIT_TOTAL/30"
+        echo ""
+        echo "PART B: R Exercises"
+        echo "  R code tests:        $R_SCORE/60"
+        echo ""
+        echo "═══════════════════════════════════════"
+        echo "  TOTAL SCORE:         $GRAND_TOTAL/90"
+        echo "═══════════════════════════════════════"
+        echo ""
+        echo "Note: student_info.R (10 pts) is included in R tests."
+        echo "Maximum automated score: 100 points"
+
+        echo "TOTAL_SCORE=$GRAND_TOTAL" >> $GITHUB_OUTPUT
+
+    - name: Create results summary
+      if: always()
+      run: |
+        echo "## Lab 2 Autograding Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Part A: Git/GitHub Practice (30 points)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Check | Score | Max |" >> $GITHUB_STEP_SUMMARY
+        echo "|-------|-------|-----|" >> $GITHUB_STEP_SUMMARY
+        echo "| Commit count (3+) | ${{ steps.check_commits.outputs.COMMITS_SCORE }} | 15 |" >> $GITHUB_STEP_SUMMARY
+        echo "| Commit messages | ${{ steps.check_commit_messages.outputs.COMMIT_MSG_SCORE }} | 15 |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Part B: R Exercises (60 points)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Check | Score | Max |" >> $GITHUB_STEP_SUMMARY
+        echo "|-------|-------|-----|" >> $GITHUB_STEP_SUMMARY
+        echo "| R code tests | ${{ steps.run_tests.outputs.R_SCORE }} | 60 |" >> $GITHUB_STEP_SUMMARY
+        echo "| Tests passed | ${{ steps.run_tests.outputs.TEST_PASSED }} | - |" >> $GITHUB_STEP_SUMMARY
+        echo "| Tests failed | ${{ steps.run_tests.outputs.TEST_FAILED }} | - |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "---" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Total Automated Score: ${{ steps.total_score.outputs.TOTAL_SCORE }}/90**" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "_Note: Git concept question quality (10 pts) will be reviewed manually._" >> $GITHUB_STEP_SUMMARY
